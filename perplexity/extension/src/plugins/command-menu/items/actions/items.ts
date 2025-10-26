@@ -6,8 +6,8 @@ import {
 } from "@/plugins/__async-deps__/global-stores/color-scheme-store";
 import { softNavigate } from "@/plugins/__core__/_main-world/spa-router/utils";
 import type { CommandItemProps } from "@/plugins/command-menu/types";
+import { infraMacroItems } from "@/plugins/command-menu/items/actions/infra-macros";
 import type { whereAmI } from "@/utils/misc/utils";
-
 import LuMoon from "~icons/lucide/moon";
 import LuSun from "~icons/lucide/sun";
 import TablerPlus from "~icons/tabler/plus";
@@ -23,6 +23,9 @@ export const getRawItems = ({
   isIncognito,
   colorScheme,
 }: ActionItemsParams): CommandItemProps[] => [
+  // Infrastructure macros at the top with highest priority
+  ...infraMacroItems,
+  // Regular actions below
   {
     eager: true,
     group: t("plugin-command-menu.groups.actions"),
