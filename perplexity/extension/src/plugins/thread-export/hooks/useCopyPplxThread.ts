@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query";
-
 import { toast } from "@/components/ui/use-toast";
 import { threadMessageBlocksDomObserverStore } from "@/plugins/__core__/dom-observers/thread/message-blocks/store";
 import { DomSelectorsService } from "@/plugins/__core__/dom-selectors/service-init.loader";
@@ -10,6 +9,10 @@ import { pplxApiQueries } from "@/services/externals/pplx-api/query-keys";
 import { parseUrl } from "@/utils/misc/utils";
 import { dualClipboardPut } from "@/utils/wrappers/clipboard-utils";
 import { errorWrapper } from "@/utils/wrappers/error-wrapper";
+import { EXPORT_TEMPLATES } from "../export-options";
+import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
+import { Converter } from "showdown";
 
 type FetchFn = () => Promise<ThreadMessageApiResponse[] | undefined>;
 
@@ -22,11 +25,14 @@ type CopyMessageParams = {
 type GetContentParams = {
   withCitations: boolean;
   messageBlockIndex?: number;
+  format?: string;
+  template?: string;
 };
+
+type ExportFormat = "markdown" | "pdf" | "html";
 
 export function useCopyPplxThread() {
   const threadSlug = parseUrl().pathname.split("/").pop() || "";
-
   const { isFetching, refetch } = useQuery({
     ...pplxApiQueries.thread.detail(threadSlug),
     enabled: false,
@@ -73,19 +79,139 @@ export function useCopyPplxThread() {
     getContent: async function getContent({
       withCitations,
       messageBlockIndex,
+      format = "markdown",
+      template,
     }: GetContentParams) {
       const threadJson = await fetchFn();
       if (threadJson == null) {
         throw new Error("Failed to fetch thread info");
       }
-
-      return new PplxThreadExport({
+      
+      let content = new PplxThreadExport({
         languageModels: PplxLanguageModelsService.allModelsFlat,
       }).exportThread({
         threadJSON: threadJson,
         includeCitations: withCitations,
         messageIndex: messageBlockIndex,
       });
+
+      // Apply template if specified
+      if (template && EXPORT_TEMPLATES[template]) {
+        const templateConfig = EXPORT_TEMPLATES[template];
+        const threadTitle = threadJson[0]?.query || "Thread Export";
+        const header = templateConfig.header
+          .replace("{date}", new Date().toISOString().split("T")[0])
+          .replace("{title}", threadTitle);
+        content = header + content;
+      }
+
+      return content;
+    },
+    exportPDF: async function exportPDF({
+      withCitations,
+      messageBlockIndex,
+      template,
+    }: GetContentParams) {
+      try {
+        // Get the thread content element
+        const threadContent = document.querySelector("[class*='ThreadContent']") as HTMLElement;
+        if (!threadContent) {
+          throw new Error("Thread content not found");
+        }
+
+        // Create canvas from the thread content
+        const canvas = await html2canvas(threadContent, {
+          scale: 2,
+          useCORS: true,
+          logging: false,
+        });
+
+        // Create PDF
+        const pdf = new jsPDF({
+          orientation: "portrait",
+          unit: "mm",
+          format: "a4",
+        });
+
+        const imgWidth = 210; // A4 width in mm
+        const pageHeight = 297; // A4 height in mm
+        const imgHeight = (canvas.height * imgWidth) / canvas.width;
+        let heightLeft = imgHeight;
+        let position = 0;
+
+        // Add first page
+        pdf.addImage(
+          canvas.toDataURL("image/png"),
+          "PNG",
+          0,
+          position,
+          imgWidth,
+          imgHeight
+        );
+        heightLeft -= pageHeight;
+
+        // Add additional pages if needed
+        while (heightLeft > 0) {
+          position = heightLeft - imgHeight;
+          pdf.addPage();
+          pdf.addImage(
+            canvas.toDataURL("image/png"),
+            "PNG",
+            0,
+            position,
+            imgWidth,
+            imgHeight
+          );
+          heightLeft -= pageHeight;
+        }
+
+        // Download the PDF
+        const threadJson = await fetchFn();
+        const threadTitle = threadJson?.[0]?.query || "thread-export";
+        const filename = `${threadTitle.replace(/[^a-z0-9]/gi, "_").toLowerCase()}.pdf`;
+        pdf.save(filename);
+
+        toast({
+          title: "✅ PDF exported successfully",
+          description: `Saved as ${filename}`,
+        });
+      } catch (error) {
+        toast({
+          title: "❌ Failed to export PDF",
+          description:
+            error instanceof Error ? error.message : "Unknown error occurred",
+        });
+        throw error;
+      }
+    },
+    exportWithFormat: async function exportWithFormat({
+      format,
+      withCitations,
+      messageBlockIndex,
+      template,
+    }: GetContentParams & { format: ExportFormat }) {
+      if (format === "pdf") {
+        return await this.exportPDF({ withCitations, messageBlockIndex, template });
+      }
+
+      const content = await this.getContent({
+        withCitations,
+        messageBlockIndex,
+        format,
+        template,
+      });
+
+      if (format === "html") {
+        const converter = new Converter({
+          tables: true,
+          tasklists: true,
+          strikethrough: true,
+          ghCodeBlocks: true,
+        });
+        return converter.makeHtml(content);
+      }
+
+      return content;
     },
   };
 }
@@ -114,9 +240,7 @@ async function copyMessageWithCitations({
     );
 
     if (!$copyButton.length) return;
-
     $copyButton.trigger("click");
-
     return;
   }
 
