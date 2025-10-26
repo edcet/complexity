@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../dist/cli-sync",
+    "rootDir": ".",
+    "composite": true,
+    "tsBuildInfoFile": "../../.tsbuildinfo/cli-sync.tsbuildinfo"
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["**/*.test.ts", "**/*.spec.ts", "node_modules"]
+}
