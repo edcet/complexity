@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../dist/wasm-runtime",
+    "rootDir": ".",
+    "composite": true,
+    "tsBuildInfoFile": "../../.tsbuildinfo/wasm-runtime.tsbuildinfo"
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["**/*.test.ts", "**/*.spec.ts", "node_modules"]
+}
