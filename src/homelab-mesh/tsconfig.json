@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../dist/homelab-mesh",
+    "rootDir": ".",
+    "composite": true,
+    "tsBuildInfoFile": "../../.tsbuildinfo/homelab-mesh.tsbuildinfo"
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["**/*.test.ts", "**/*.spec.ts", "node_modules"]
+}
