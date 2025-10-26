@@ -15,21 +15,13 @@
 export type TransportKind = 'websocket' | 'webtransport' | 'tcp' | 'auto';
 
 export interface EndpointConfig {
-  /** Preferred transport kind; 'auto' will probe in order: WebTransport, WebSocket, TCP */
   transport?: TransportKind;
-  /** WebSocket URL, e.g. ws://127.0.0.1:8787/cli */
   wsUrl?: string;
-  /** WebTransport URL, e.g. https://127.0.0.1:8788/cli (H3 + WT) */
   wtUrl?: string;
-  /** TCP host (Deno.connect) */
   host?: string;
-  /** TCP port (Deno.connect) */
   port?: number;
-  /** Optional path namespace for CLI RPC */
   path?: string;
-  /** Connection timeout ms */
   timeoutMs?: number;
-  /** Retry policy */
   retry?: {
     maxAttempts?: number;
     baseDelayMs?: number;
@@ -39,31 +31,21 @@ export interface EndpointConfig {
 }
 
 export interface AuthConfig {
-  /** Bearer token for HTTP-based transports */
   token?: string;
-  /** mTLS / client cert PEM (for Deno runtime environments) */
   clientCertPem?: string;
-  /** Extra headers for WS/WT handshakes (note: browser WS cannot set headers) */
   headers?: Record<string, string>;
 }
 
 export interface FilterRule {
-  /** Glob or regex string */
   pattern: string;
-  /** Include (true) or exclude (false) */
   include?: boolean;
-  /** Event kinds this rule applies to */
   kinds?: Array<'fs' | 'proc' | 'telemetry' | 'custom'>;
 }
 
 export interface SchedulerConfig {
-  /** Max in-flight commands (concurrency) */
   maxInFlight?: number;
-  /** Queue size before backpressure applies */
   maxQueue?: number;
-  /** Heartbeat/ping interval ms */
   heartbeatMs?: number;
-  /** Idle disconnect timeout ms */
   idleTimeoutMs?: number;
 }
 
@@ -72,24 +54,19 @@ export interface SyncConfig {
   auth?: AuthConfig;
   filters?: FilterRule[];
   scheduler?: SchedulerConfig;
-  /** Feature flags for experimental capabilities */
   features?: {
     enableFileWatch?: boolean;
     enableTelemetry?: boolean;
     preferBinaryFrames?: boolean;
   };
-  /** Logger for debug traces (optional) */
   logger?: Pick<Console, 'debug' | 'info' | 'warn' | 'error'>;
 }
 
 export type CommandEventKind = 'output' | 'error' | 'done';
 export interface CommandEvent<T = unknown> {
   kind: CommandEventKind;
-  /** Raw chunk or structured data */
   data?: T;
-  /** Optional message */
   message?: string;
-  /** Command id this event relates to */
   id: string;
 }
 
@@ -108,24 +85,19 @@ interface Transport {
   readonly kind: TransportKind;
   connect: () => Promise<void>;
   send: (msg: unknown) => Promise<void>;
-  /** Receive raw frames/messages from the CLI */
   onMessage: (handler: (msg: unknown) => void) => void;
-  /** Lifecycle events */
   onClose: (handler: (reason?: string) => void) => void;
   close: () => Promise<void>;
   isOpen: () => boolean;
 }
 
-/**
- * No-op placeholder transport used before an actual transport is connected.
- */
 class NullTransport implements Transport {
   readonly kind: TransportKind = 'auto';
   private open = false;
   async connect(): Promise<void> { this.open = true; }
   async send(): Promise<void> { throw new Error('Transport not connected'); }
-  onMessage(): void { /* ignore */ }
-  onClose(): void { /* ignore */ }
+  onMessage(): void { /* noop */ }
+  onClose(): void { /* noop */ }
   async close(): Promise<void> { this.open = false; }
   isOpen(): boolean { return this.open; }
 }
@@ -141,7 +113,6 @@ export class CLISyncManager {
   private cfg: SyncConfig;
   private heartbeatTimer?: number | ReturnType<typeof setInterval>;
 
-  // Hooks for bidirectional sync and lifecycle
   public hooks: {
     onConnect?: () => void;
     onDisconnect?: (reason?: string) => void;
@@ -150,46 +121,32 @@ export class CLISyncManager {
     onTelemetry?: (data: Record<string, unknown>) => void;
   } = {};
 
-  constructor(cfg: SyncConfig) {
-    this.cfg = cfg;
-  }
+  constructor(cfg: SyncConfig) { this.cfg = cfg; }
 
-  /**
-   * Establish a connection using the configured endpoint strategy.
-   * Probes transports when set to 'auto'.
-   */
   async connect(): Promise<void> {
-    const { endpoints, logger } = this.cfg;
-    const transport = await this.selectTransport(endpoints);
+    const transport = await this.selectTransport(this.cfg.endpoints);
     this.transport = transport;
     this.transport.onMessage((msg) => this.handleMessage(msg));
     this.transport.onClose((reason) => this.handleClose(reason));
     await this.transport.connect();
-    logger?.info?.(`[cli-sync] connected via ${this.transport.kind}`);
+    this.cfg.logger?.info?.(`[cli-sync] connected via ${this.transport.kind}`);
     this.hooks.onConnect?.();
     this.startHeartbeat();
     this.flushQueue();
   }
 
-  /** Send a JSON-serializable message through the transport */
   async send(msg: unknown): Promise<void> {
-    if (!this.transport.isOpen()) {
-      throw new Error('Transport is not open');
-    }
+    if (!this.transport.isOpen()) throw new Error('Transport is not open');
     await this.transport.send(msg);
   }
 
-  /** Enqueue a command; creation of stream happens via executeCommand */
   enqueue(cmd: CommandRequest): void {
     const maxQueue = this.cfg.scheduler?.maxQueue ?? 1024;
-    if (this.queue.length >= maxQueue) {
-      throw new Error('Command queue capacity exceeded');
-    }
+    if (this.queue.length >= maxQueue) throw new Error('Command queue capacity exceeded');
     this.queue.push(cmd);
     this.flushQueue();
   }
 
-  /** Process queue respecting maxInFlight */
   private flushQueue(): void {
     const cap = this.cfg.scheduler?.maxInFlight ?? 4;
     while (this.inFlight.size < cap && this.queue.length > 0 && this.transport.isOpen()) {
@@ -204,7 +161,6 @@ export class CLISyncManager {
     }
   }
 
-  /** Handle inbound frames from CLI */
   private handleMessage(msg: unknown): void {
     this.hooks.onMessage?.(msg);
     if (typeof msg === 'object' && msg !== null) {
@@ -238,12 +194,12 @@ export class CLISyncManager {
   }
 
   private startHeartbeat(): void {
-    const hb = this.cfg.scheduler?.heartbeatMs ?? 15_000;
+    const hb = this.cfg.scheduler?.heartbeatMs ?? 15000;
     if (hb <= 0) return;
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       if (this.transport.isOpen()) {
-        void this.transport.send({ type: 'ping', t: Date.now() }).catch(() => {/* ignore */});
+        void this.transport.send({ type: 'ping', t: Date.now() }).catch(() => {});
       }
     }, hb);
   }
@@ -255,24 +211,15 @@ export class CLISyncManager {
     }
   }
 
-  /** Register resolver that streams events for a command id */
   registerStream(id: string, push: (evt: CommandEvent) => void): void {
     this.inFlight.set(id, push);
   }
 
-  /** Disconnect transport */
-  async disconnect(): Promise<void> {
-    await this.transport.close();
-  }
+  async disconnect(): Promise<void> { await this.transport.close(); }
 
-  /** Transport selection logic; implementations are stubbed for browser safety */
   private async selectTransport(ep: EndpointConfig): Promise<Transport> {
     const preferred = ep.transport ?? 'auto';
-
-    const candidates: TransportKind[] = preferred === 'auto'
-      ? ['webtransport', 'websocket', 'tcp']
-      : [preferred];
-
+    const candidates: TransportKind[] = preferred === 'auto' ? ['webtransport', 'websocket', 'tcp'] : [preferred];
     for (const kind of candidates) {
       try {
         if (kind === 'websocket' && ep.wsUrl) return this.createWebSocketTransport(ep);
@@ -280,33 +227,30 @@ export class CLISyncManager {
         if (kind === 'tcp' && ep.host && typeof Deno !== 'undefined') return this.createTcpTransport(ep);
       } catch (err) {
         this.cfg.logger?.warn?.(`[cli-sync] transport ${kind} init failed: ${err}`);
-        continue;
       }
     }
     throw new Error('No viable transport could be initialized');
   }
 
   private createWebSocketTransport(ep: EndpointConfig): Transport {
-    let ws: WebSocket | undefined;
-    let open = false;
+    let ws: WebSocket | undefined; let open = false;
     let msgHandler: ((msg: unknown) => void) | undefined;
     let closeHandler: ((reason?: string) => void) | undefined;
-
     return {
       kind: 'websocket',
       async connect() {
         return new Promise<void>((resolve, reject) => {
           ws = new WebSocket(ep.wsUrl!);
           ws.binaryType = 'arraybuffer';
-          const to = setTimeout(() => reject(new Error('WS connect timeout')), ep.timeoutMs ?? 10_000);
+          const to = setTimeout(() => reject(new Error('WS connect timeout')), ep.timeoutMs ?? 10000);
           ws!.onopen = () => { open = true; clearTimeout(to); resolve(); };
           ws!.onmessage = (ev) => {
             let payload: unknown = ev.data;
-            try { if (typeof ev.data === 'string') payload = JSON.parse(ev.data); } catch { /* ignore */ }
+            try { if (typeof ev.data === 'string') payload = JSON.parse(ev.data); } catch { }
             msgHandler?.(payload);
           };
           ws!.onclose = (ev) => { open = false; closeHandler?.(ev.reason || 'closed'); };
-          ws!.onerror = () => { /* usually followed by close */ };
+          ws!.onerror = () => {};
         });
       },
       async send(msg: unknown) {
@@ -324,11 +268,9 @@ export class CLISyncManager {
   private createWebTransport(ep: EndpointConfig): Transport {
     const hasWT = typeof (globalThis as any).WebTransport !== 'undefined';
     if (!hasWT) throw new Error('WebTransport not available');
-
     let wt: any; let open = false;
     let msgHandler: ((msg: unknown) => void) | undefined;
     let closeHandler: ((reason?: string) => void) | undefined;
-
     return {
       kind: 'webtransport',
       async connect() {
@@ -343,9 +285,9 @@ export class CLISyncManager {
           while (open) {
             const { done, value } = await reader.read();
             if (done) break;
-            try { msgHandler?.(JSON.parse(decoder.decode(value))); } catch { /* ignore */ }
+            try { msgHandler?.(JSON.parse(decoder.decode(value))); } catch { }
           }
-        })().catch(() => {/* ignore */});
+        })().catch(() => {});
       },
       async send(msg: unknown) {
         if (!open || !(this as any)._writer) throw new Error('WT not open');
@@ -355,7 +297,7 @@ export class CLISyncManager {
       },
       onMessage(handler) { msgHandler = handler; },
       onClose(handler) { closeHandler = handler; },
-      async close() { open = false; try { await wt?.close?.(); } catch { /* ignore */ } },
+      async close() { open = false; try { await wt?.close?.(); } catch { } },
       isOpen() { return open; },
     };
   }
@@ -376,9 +318,9 @@ export class CLISyncManager {
           while (open) {
             const { done, value } = await reader.read();
             if (done) break;
-            try { msgHandler?.(JSON.parse(decoder.decode(value))); } catch { /* ignore */ }
+            try { msgHandler?.(JSON.parse(decoder.decode(value))); } catch { }
           }
-        })().catch(() => {/* ignore */});
+        })().catch(() => {});
       },
       async send(msg: unknown) {
         if (!open) throw new Error('TCP not open');
@@ -388,7 +330,7 @@ export class CLISyncManager {
       },
       onMessage(handler) { msgHandler = handler; },
       onClose(handler) { closeHandler = handler; },
-      async close() { open = false; try { conn?.close?.(); } catch { /* ignore */ } },
+      async close() { open = false; try { conn?.close?.(); } catch { } },
       isOpen() { return open; },
     };
   }
@@ -398,14 +340,6 @@ export class CLISyncManager {
 
 //#region Public API
 
-/**
- * Connect to the local CLI using the provided configuration.
- *
- * Behavior:
- * - Attempts connection using configured transport (or auto probe).
- * - Sets up heartbeat and message routing.
- * - Returns once the connection is established or throws on failure.
- */
 export async function connectToCLI(config: SyncConfig): Promise<void> {
   const mgr = new CLISyncManager(config);
   await mgr.connect();
@@ -413,4 +347,64 @@ export async function connectToCLI(config: SyncConfig): Promise<void> {
 
 /**
  * Execute a command and stream results as an async iterator of CommandEvent.
- *
+ * Emits: output, error, done. Iterator completes on done or first terminal error.
+ */
+export function executeCommand(
+  manager: CLISyncManager,
+  command: string,
+  args: string[] = [],
+  payload?: unknown,
+): AsyncIterable<CommandEvent> {
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const req: CommandRequest = { id, command, args, payload };
+
+  return {
+    [Symbol.asyncIterator]() {
+      let queue: CommandEvent[] = [];
+      let pendingResolve: ((value: IteratorResult<CommandEvent>) => void) | null = null;
+      let done = false;
+
+      const push = (evt: CommandEvent) => {
+        queue.push(evt);
+        if (evt.kind === 'done' || evt.kind === 'error') {
+          // terminal event, mark done after pushing through consumer
+          if (evt.kind === 'done') done = true;
+        }
+        if (pendingResolve) {
+          const r = queue.shift()!;
+          const resolve = pendingResolve; pendingResolve = null;
+          resolve({ value: r, done: false });
+        }
+      };
+
+      // Register stream resolver before enqueueing to avoid race
+      manager.registerStream(id, push);
+      manager.enqueue(req);
+
+      return {
+        async next(): Promise<IteratorResult<CommandEvent>> {
+          if (queue.length > 0) {
+            const value = queue.shift()!;
+            if (value.kind === 'done') return { value, done: true };
+            if (value.kind === 'error') return { value, done: true };
+            return { value, done: false };
+          }
+          if (done) return { value: undefined as any, done: true };
+          return new Promise<IteratorResult<CommandEvent>>((resolve) => {
+            pendingResolve = resolve;
+          });
+        },
+        async return() {
+          done = true;
+          return { value: undefined as any, done: true };
+        },
+        async throw(err?: any) {
+          done = true;
+          return { value: { id, kind: 'error', message: String(err) }, done: true } as any;
+        },
+      };
+    },
+  };
+}
+
+//#endregion
