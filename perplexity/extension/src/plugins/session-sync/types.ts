@@ -52,3 +52,22 @@ export interface SysendMessage {
   requesterId?: string
   targetTabId?: string
 }
+
+// New enhancement: Session validation and error tracking
+export interface SessionError {
+  code: 'SYNC_FAILED' | 'SNAPSHOT_CORRUPT' | 'STORAGE_QUOTA' | 'NETWORK_ERROR' | 'VALIDATION_ERROR'
+  message: string
+  timestamp: number
+  sessionId?: string
+  context?: Record<string, any>
+}
+
+export interface SessionMetrics {
+  totalSessions: number
+  activeSessions: number
+  dormantSessions: number
+  historicalSessions: number
+  syncLatency: number
+  lastSyncTime: number
+  errors: SessionError[]
+}
